@@ -67,7 +67,7 @@ with tab2:
                     prod_data = {
                         "nazwa": nazwa_prod, 
                         "liczba": liczba, 
-                        "Cena": cena, # Wielka litera zgodnie ze schematem
+                        "cena": cena, # Wielka litera zgodnie ze schematem
                         "kategoria_id": kat_id
                     }
                     supabase.table("produkty").insert(prod_data).execute()
@@ -86,7 +86,7 @@ with tab2:
                 "ID": p['id'],
                 "Nazwa": p['nazwa'],
                 "Ilość": p['liczba'],
-                "Cena": p['Cena'],
+                "Cena": p['cena'],
                 "Kategoria": p['Kategorie']['nazwa'] if p['Kategorie'] else "Brak"
             })
         st.table(display_data)
