@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
-from datetime import datetime
 
 # --- BEZPIECZNY IMPORT PLOTLY ---
 try:
@@ -11,7 +10,7 @@ except ImportError:
     PLOTLY_AVAILABLE = False
 
 # --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="WMS Pro + Finanse", layout="wide", page_icon="📊")
+st.set_page_config(page_title="WMS Pro", layout="wide", page_icon="📦")
 
 # --- POŁĄCZENIE Z SUPABASE ---
 try:
@@ -27,13 +26,12 @@ def fetch_all_data():
     try:
         res_kat = supabase.table("Kategorie").select("*").execute()
         res_prod = supabase.table("produkty").select("*, Kategorie(nazwa)").execute()
-        res_sales = supabase.table("sprzedaz").select("*").execute()
-        return res_kat.data, res_prod.data, res_sales.data
+        return res_kat.data, res_prod.data
     except Exception as e:
         st.error(f"Błąd pobierania danych: {e}")
-        return [], [], []
+        return [], []
 
-kategorie, produkty, sprzedaz_raw = fetch_all_data()
+kategorie, produkty = fetch_all_data()
 
 # Przygotowanie danych do analizy w Pandas
 df = pd.DataFrame(produkty)
@@ -41,12 +39,37 @@ if not df.empty:
     df['Kategoria_Nazwa'] = df['Kategorie'].apply(lambda x: x['nazwa'] if x else "Brak")
     df['Wartość'] = df['liczba'] * df['cena']
 
+# --- TYTUŁ I STATYSTYKI ---
+st.title("📦 System Zarządzania Magazynem")
+
+if not df.empty:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Produkty (łącznie)", f"{int(df['liczba'].sum())} szt.")
+    c2.metric("Wartość Magazynu", f"{df['Wartość'].sum():,.2f} PLN")
+    low_stock_count = len(df[df['liczba'] < 5])
+    c3.metric("Niskie stany (<5)", low_stock_count)
+    
+    csv = df.to_csv(index=False).encode('utf-8')
+    c4.download_button("📥 Pobierz Raport CSV", data=csv, file_name="magazyn.csv")
+
+# --- ANALITYKA WIZUALNA ---
+if PLOTLY_AVAILABLE and not df.empty:
+    col_a, col_b = st.columns(2)
+    with col_a:
+        fig1 = px.pie(df, values='Wartość', names='Kategoria_Nazwa', title="Udział wartościowy kategorii")
+        st.plotly_chart(fig1, use_container_width=True)
+    with col_b:
+        fig2 = px.bar(df.nlargest(10, 'liczba'), x='nazwa', y='liczba', title="Top 10 najliczniejszych produktów")
+        st.plotly_chart(fig2, use_container_width=True)
+
+st.divider()
+
 # --- ZAKŁADKI ---
-tab1, tab2, tab3, tab4 = st.tabs(["🛒 Zamówienia", "📦 Baza Produktów", "📂 Kategorie", "📈 Analiza Zysków"])
+tab1, tab2, tab3 = st.tabs(["🛒 Nowe Zamówienie", "📦 Baza i Edycja Produktów", "📂 Kategorie"])
 
 # --- ZAKŁADKA 1: ZAMÓWIENIA ---
 with tab1:
-    st.header("🛒 Nowe Zamówienie")
+    st.header("🛒 Kreator Zamówienia")
     if df.empty:
         st.info("Brak produktów w bazie.")
     else:
@@ -58,22 +81,31 @@ with tab1:
         with col_filter:
             st.subheader("Wybierz produkty")
             lista_kat_nazw = ["Wszystkie"] + [k['nazwa'] for k in kategorie]
-            wybrana_kat = st.selectbox("Filtruj wg kategorii", options=lista_kat_nazw)
+            wybrana_kat = st.selectbox("Filtruj wg kategorii", options=lista_kat_nazw, key="filter_order")
             
-            df_filtered = df[df['liczba'] > 0] if wybrana_kat == "Wszystkie" else df[(df['Kategoria_Nazwa'] == wybrana_kat) & (df['liczba'] > 0)]
+            if wybrana_kat == "Wszystkie":
+                df_filtered = df[df['liczba'] > 0]
+            else:
+                df_filtered = df[(df['Kategoria_Nazwa'] == wybrana_kat) & (df['liczba'] > 0)]
             
             if df_filtered.empty:
-                st.warning("Brak dostępnych towarów.")
+                st.warning("Brak dostępnych produktów w tej kategorii.")
             else:
                 with st.form("add_to_cart_form"):
-                    sel_id = st.selectbox("Produkt", options=df_filtered['id'].tolist(),
-                                        format_func=lambda x: f"{df_filtered[df_filtered['id']==x]['nazwa'].values[0]} (Stan: {df_filtered[df_filtered['id']==x]['liczba'].values[0]})")
+                    sel_id = st.selectbox(
+                        "Produkt", 
+                        options=df_filtered['id'].tolist(),
+                        format_func=lambda x: f"{df_filtered[df_filtered['id']==x]['nazwa'].values[0]} (Stan: {df_filtered[df_filtered['id']==x]['liczba'].values[0]})"
+                    )
                     order_qty = st.number_input("Ilość", min_value=1, step=1)
+                    
                     if st.form_submit_button("➕ Dodaj do koszyka"):
                         p_info = df_filtered[df_filtered['id'] == sel_id].iloc[0]
                         st.session_state.cart.append({
-                            "id": int(sel_id), "nazwa": p_info['nazwa'], 
-                            "cena": float(p_info['cena']), "ilosc": int(order_qty), 
+                            "id": int(sel_id), 
+                            "nazwa": p_info['nazwa'], 
+                            "cena": float(p_info['cena']), 
+                            "ilosc": int(order_qty), 
                             "suma": float(order_qty * p_info['cena'])
                         })
                         st.rerun()
@@ -83,18 +115,15 @@ with tab1:
             if st.session_state.cart:
                 cart_df = pd.DataFrame(st.session_state.cart)
                 st.table(cart_df[['nazwa', 'ilosc', 'suma']])
-                total_sum = cart_df['suma'].sum()
-                st.write(f"### Razem: {total_sum:.2f} PLN")
+                st.write(f"### Suma: {cart_df['suma'].sum():,.2f} PLN")
                 
-                if st.button("✅ Potwierdź i zapisz sprzedaż"):
+                if st.button("✅ Potwierdź zamówienie"):
                     for item in st.session_state.cart:
-                        # Update stanu
-                        actual = supabase.table("produkty").select("liczba").eq("id", item['id']).single().execute()
-                        supabase.table("produkty").update({"liczba": actual.data['liczba'] - item['ilosc']}).eq("id", item['id']).execute()
-                        # Zapis sprzedaży
-                        supabase.table("sprzedaz").insert({"produkt_id": item['id'], "ilosc": item['ilosc'], "kwota_total": item['suma']}).execute()
+                        actual_stock = supabase.table("produkty").select("liczba").eq("id", item['id']).single().execute()
+                        new_qty = actual_stock.data['liczba'] - item['ilosc']
+                        supabase.table("produkty").update({"liczba": new_qty}).eq("id", item['id']).execute()
                     
-                    st.success("Zamówienie zrealizowane!")
+                    st.success("Zrealizowano zamówienie!")
                     st.session_state.cart = []
                     st.rerun()
                 
@@ -104,73 +133,112 @@ with tab1:
             else:
                 st.info("Koszyk jest pusty.")
 
-# --- ZAKŁADKA 2: PRODUKTY ---
+# --- ZAKŁADKA 2: PRODUKTY (DODAWANIE + EDYCJA + LISTA) ---
 with tab2:
-    st.header("📦 Magazyn i Produkty")
+    st.header("📦 Zarządzanie Produktami")
+    
+    # 1. Dodawanie Nowego Produktu
     with st.expander("➕ Dodaj nowy produkt"):
         if not kategorie:
-            st.warning("Dodaj najpierw kategorię!")
+            st.warning("Najpierw dodaj kategorię w zakładce 'Kategorie'!")
         else:
-            with st.form("new_p"):
-                n_nazwa = st.text_input("Nazwa")
-                n_liczba = st.number_input("Ilość", min_value=0)
+            with st.form("new_product_form"):
+                n_nazwa = st.text_input("Nazwa produktu")
+                n_liczba = st.number_input("Ilość", min_value=0, step=1)
                 n_cena = st.number_input("Cena", min_value=0.0, format="%.2f")
-                n_kat = st.selectbox("Kategoria", options=[k['id'] for k in kategorie], format_func=lambda x: next(k['nazwa'] for k in kategorie if k['id'] == x))
-                if st.form_submit_button("Zapisz"):
-                    supabase.table("produkty").insert({"nazwa": n_nazwa, "liczba": n_liczba, "cena": n_cena, "kategoria_id": n_kat}).execute()
-                    st.rerun()
+                n_kat = st.selectbox("Kategoria", options=[k['id'] for k in kategorie],
+                                     format_func=lambda x: next(k['nazwa'] for k in kategorie if k['id'] == x))
+                if st.form_submit_button("Zapisz produkt"):
+                    if n_nazwa:
+                        supabase.table("produkty").insert({
+                            "nazwa": n_nazwa, "liczba": n_liczba, 
+                            "cena": n_cena, "kategoria_id": n_kat
+                        }).execute()
+                        st.success("Dodano produkt!")
+                        st.rerun()
 
     if not df.empty:
+        st.divider()
+        
+        # 2. Szybka Edycja Wybranego Produktu
+        st.subheader("📝 Edycja istniejącego produktu")
+        edit_p_id = st.selectbox("Wybierz produkt do zmiany danych", 
+                                 options=df['id'].tolist(),
+                                 format_func=lambda x: df[df['id']==x]['nazwa'].values[0],
+                                 key="edit_select")
+        
+        p_data = df[df['id'] == edit_p_id].iloc[0]
+        
+        col_e1, col_e2, col_e3, col_e4 = st.columns([2, 1, 1, 1])
+        with col_e1:
+            up_name = st.text_input("Nazwa", value=p_data['nazwa'], key="up_n")
+        with col_e2:
+            up_stock = st.number_input("Ilość", value=int(p_data['liczba']), key="up_s")
+        with col_e3:
+            up_price = st.number_input("Cena", value=float(p_data['cena']), key="up_p")
+        with col_e4:
+            st.write("Akcja")
+            if st.button("💾 Aktualizuj", use_container_width=True):
+                supabase.table("produkty").update({
+                    "nazwa": up_name, "liczba": up_stock, "cena": up_price
+                }).eq("id", edit_p_id).execute()
+                st.success("Zmieniono!")
+                st.rerun()
+
+        st.divider()
+        
+        # 3. Lista z Wyszukiwarką
+        st.subheader("🔍 Przeglądaj Magazyn")
+        search = st.text_input("Wpisz nazwę, aby przefiltrować listę...")
+        
+        df_view = df[df['nazwa'].str.contains(search, case=False)] if search else df
+
         def highlight_low(s):
             return ['color: red' if v < 5 else '' for v in s]
-        st.dataframe(df[['nazwa', 'Kategoria_Nazwa', 'liczba', 'cena', 'Wartość']].style.apply(highlight_low, subset=['liczba']), use_container_width=True)
         
-        st.subheader("Usuwanie")
-        to_del = st.selectbox("Produkt do usunięcia", options=df['id'].tolist(), format_func=lambda x: df[df['id']==x]['nazwa'].values[0])
-        if st.button("Usuń produkt"):
+        st.dataframe(df_view[['id', 'nazwa', 'Kategoria_Nazwa', 'liczba', 'cena', 'Wartość']]
+                     .style.apply(highlight_low, subset=['liczba']), use_container_width=True)
+        
+        st.info(f"Suma wartości widocznych pozycji: **{df_view['Wartość'].sum():,.2f} PLN**")
+        
+        # 4. Usuwanie
+        st.divider()
+        st.subheader("🗑️ Usuwanie")
+        to_del = st.selectbox("Wybierz produkt do USUNIĘCIA", options=df['id'].tolist(),
+                              format_func=lambda x: df[df['id']==x]['nazwa'].values[0], key="del_select")
+        if st.button("🗑️ Usuń produkt na stałe"):
             supabase.table("produkty").delete().eq("id", to_del).execute()
+            st.success("Usunięto pomyślnie!")
             st.rerun()
+    else:
+        st.info("Baza produktów jest pusta.")
 
 # --- ZAKŁADKA 3: KATEGORIE ---
 with tab3:
-    st.header("📂 Kategorie")
+    st.header("📂 Zarządzanie Kategoriami")
     col_a, col_b = st.columns(2)
+    
     with col_a:
-        with st.form("new_cat"):
-            c_name = st.text_input("Nazwa kategorii")
-            c_desc = st.text_area("Opis")
-            if st.form_submit_button("Dodaj"):
-                supabase.table("Kategorie").insert({"nazwa": c_name, "opis": c_desc}).execute()
-                st.rerun()
-    with col_b:
-        for k in kategorie:
-            c1, c2 = st.columns([3, 1])
-            c1.write(f"**{k['nazwa']}**")
-            if c2.button("Usuń", key=f"dk_{k['id']}"):
-                try:
-                    supabase.table("Kategorie").delete().eq("id", k['id']).execute()
+        st.subheader("Dodaj kategorię")
+        with st.form("new_cat_form"):
+            c_nazwa = st.text_input("Nazwa kategorii")
+            c_opis = st.text_area("Opis (opcjonalnie)")
+            if st.form_submit_button("Dodaj kategorię"):
+                if c_nazwa:
+                    supabase.table("Kategorie").insert({"nazwa": c_nazwa, "opis": c_opis}).execute()
                     st.rerun()
-                except:
-                    st.error("Kategoria ma przypisane produkty!")
 
-# --- ZAKŁADKA 4: ANALIZA ZYSKÓW ---
-with tab4:
-    st.header("📈 Dzienne Zyski")
-    if not sprzedaz_raw:
-        st.info("Brak historii sprzedaży.")
-    else:
-        sales_df = pd.DataFrame(sprzedaz_raw)
-        sales_df['data'] = pd.to_datetime(sales_df['created_at']).dt.date
-        daily_profit = sales_df.groupby('data')['kwota_total'].sum().reset_index()
-
-        st.metric("Całkowity Przychód", f"{daily_profit['kwota_total'].sum():,.2f} PLN")
-        
-        if PLOTLY_AVAILABLE:
-            fig = px.bar(daily_profit, x='data', y='kwota_total', title="Zysk na przestrzeni dni", color_discrete_sequence=['#00CC96'])
-            st.plotly_chart(fig, use_container_width=True)
-            
+    with col_b:
+        st.subheader("Istniejące kategorie")
+        if kategorie:
+            for k in kategorie:
+                with st.expander(f"📁 {k['nazwa']}"):
+                    st.write(f"Opis: {k['opis'] if k['opis'] else 'Brak'}")
+                    if st.button("Usuń", key=f"del_k_{k['id']}"):
+                        try:
+                            supabase.table("Kategorie").delete().eq("id", k['id']).execute()
+                            st.rerun()
+                        except:
+                            st.error("Nie można usunąć – kategoria zawiera produkty!")
         else:
-            st.bar_chart(daily_profit.set_index('data'))
-
-        st.subheader("Ostatnie operacje")
-        st.dataframe(sales_df.sort_values('created_at', ascending=False), use_container_width=True)
+            st.info("Brak kategorii.")
